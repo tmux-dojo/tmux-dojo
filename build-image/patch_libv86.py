@@ -16,6 +16,11 @@ If upstream v86 changes its minified output, this script fails loudly instead
 of silently producing a broken libv86.js — update PATCHES below or pin a
 different V86_VERSION in build.sh.
 
+Required assets (libv86.js, v86.wasm) abort the script when missing or
+ambiguous; optional BIOS ROMs only produce a warning (build.sh downloads
+them from github.com/copy/v86 when absent). build.sh verifies the tarball
+against the npm registry's sha512 integrity hash before calling this script.
+
 Usage:
     python3 patch_libv86.py <v86-npm-tarball.tgz> <output-dir>
 """
@@ -48,6 +53,16 @@ PATCHES = [
     ),
 ]
 
+# (output filename, member-name suffix, exact member name, required)
+# The npm tarball uses the "package/..." layout; the suffix matches any
+# nested copy. Exactly one member must match each asset.
+ASSET_SPECS = [
+    ("libv86.js", "/build/libv86.js", "package/build/libv86.js", True),
+    ("v86.wasm", "/build/v86.wasm", "package/build/v86.wasm", True),
+    ("seabios.bin", "/bios/seabios.bin", None, False),
+    ("vgabios.bin", "/bios/vgabios.bin", None, False),
+]
+
 
 def patch_libv86(js_code: str) -> str:
     for name, old, new in PATCHES:
@@ -72,35 +87,42 @@ def main() -> None:
     out_dir = Path(sys.argv[2])
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    found = {"libv86.js": False, "v86.wasm": False, "seabios.bin": False, "vgabios.bin": False}
+    try:
+        tf = tarfile.open(tarball_path, mode="r:gz")
+    except (tarfile.TarError, OSError) as exc:
+        raise SystemExit(f"ERROR: cannot open v86 tarball '{tarball_path}': {exc}")
 
-    with tarfile.open(tarball_path, mode="r:gz") as tf:
-        for member in tf.getmembers():
-            name = member.name
-            if name.endswith("/build/libv86.js") or name == "package/build/libv86.js":
-                js_code = tf.extractfile(member).read().decode("utf-8")
-                js_code = patch_libv86(js_code)
-                (out_dir / "libv86.js").write_text(js_code, encoding="utf-8")
-                found["libv86.js"] = True
+    with tf:
+        members = [m for m in tf.getmembers() if m.isfile()]
+        for out_name, suffix, exact, required in ASSET_SPECS:
+            matched = [
+                m
+                for m in members
+                if m.name.endswith(suffix) or (exact is not None and m.name == exact)
+            ]
+            if len(matched) > 1:
+                paths = ", ".join(m.name for m in matched)
+                raise SystemExit(
+                    f"ERROR: ambiguous tarball '{tarball_path}': {len(matched)} members "
+                    f"match asset '{out_name}': {paths}"
+                )
+            if not matched:
+                if required:
+                    raise SystemExit(
+                        f"ERROR: required asset '{out_name}' (member matching '{suffix}') "
+                        f"not found in '{tarball_path}'"
+                    )
+                print(f"  -> Optional '{out_name}' not in tarball (build.sh fetches it from GitHub if missing)")
+                continue
+
+            data = tf.extractfile(matched[0]).read()
+            if out_name == "libv86.js":
+                data = patch_libv86(data.decode("utf-8")).encode("utf-8")
                 print("  -> Extracted & patched libv86.js")
-            elif name.endswith("/build/v86.wasm") or name == "package/build/v86.wasm":
-                (out_dir / "v86.wasm").write_bytes(tf.extractfile(member).read())
-                found["v86.wasm"] = True
-                print("  -> Extracted v86.wasm")
-            elif name.endswith("/bios/seabios.bin"):
-                (out_dir / "seabios.bin").write_bytes(tf.extractfile(member).read())
-                found["seabios.bin"] = True
-                print("  -> Extracted seabios.bin")
-            elif name.endswith("/bios/vgabios.bin"):
-                (out_dir / "vgabios.bin").write_bytes(tf.extractfile(member).read())
-                found["vgabios.bin"] = True
-                print("  -> Extracted vgabios.bin")
-
-    missing = [k for k, v in found.items() if not v]
-    if missing:
-        # BIOS ROMs are not bundled in the npm tarball; build.sh downloads them
-        # from github.com/copy/v86 as a fallback.
-        print(f"  -> Not in tarball (build.sh will fetch from GitHub if missing): {', '.join(missing)}")
+            else:
+                print(f"  -> Extracted {out_name}")
+            # write bytes so output is byte-stable on every platform (no newline translation)
+            (out_dir / out_name).write_bytes(data)
 
 
 if __name__ == "__main__":

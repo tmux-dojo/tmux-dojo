@@ -20,6 +20,7 @@ V86_CACHE_DIR="$SCRIPT_DIR/.v86-cache"
 V86_VERSION="${V86_VERSION:-0.5.473}"
 V86_TARBALL_URL="https://registry.npmjs.org/v86/-/v86-${V86_VERSION}.tgz"
 V86_TARBALL="$V86_CACHE_DIR/v86-${V86_VERSION}.tgz"
+V86_INTEGRITY_FILE="$V86_CACHE_DIR/v86-${V86_VERSION}.integrity"
 
 mkdir -p "$V86_DIR"
 
@@ -27,16 +28,50 @@ echo "============================================================"
 echo " tmux-dojo: v86 Assets & Custom Alpine Linux Image Builder"
 echo "============================================================"
 
+# Expected sha512 SRI hash for the pinned release, from the npm registry
+# (cached locally so repeat builds don't re-fetch the metadata).
+expected_v86_integrity() {
+    if [ ! -s "$V86_INTEGRITY_FILE" ]; then
+        curl -fsSL "https://registry.npmjs.org/v86/${V86_VERSION}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["dist"]["integrity"])' \
+            > "$V86_INTEGRITY_FILE"
+    fi
+    cat "$V86_INTEGRITY_FILE"
+}
+
+verify_v86_tarball() {
+    local expected actual
+    expected="$(expected_v86_integrity)"
+    actual="$(python3 -c 'import base64,hashlib,sys; print("sha512-" + base64.b64encode(hashlib.sha512(open(sys.argv[1], "rb").read()).digest()).decode())' "$V86_TARBALL")"
+    if [ "$expected" != "$actual" ]; then
+        echo "  ERROR: sha512 mismatch for $V86_TARBALL" >&2
+        echo "    expected: $expected" >&2
+        echo "    actual:   $actual" >&2
+        return 1
+    fi
+}
+
+fetch_v86_tarball() {
+    mkdir -p "$V86_CACHE_DIR"
+    if [ -f "$V86_TARBALL" ] && verify_v86_tarball; then
+        echo "  -> Using cached $V86_TARBALL (sha512 verified)"
+        return 0
+    fi
+    rm -f "$V86_TARBALL"
+    echo "  -> Fetching $V86_TARBALL_URL"
+    curl -fsSL "$V86_TARBALL_URL" -o "$V86_TARBALL"
+    if ! verify_v86_tarball; then
+        rm -f "$V86_TARBALL"
+        echo "ERROR: downloaded v86 v${V86_VERSION} tarball failed the npm registry sha512 integrity check" >&2
+        exit 1
+    fi
+    echo "  -> sha512 integrity verified against npm registry"
+}
+
 # 1. Download the pinned v86 npm tarball and extract/patch its assets
 download_v86_assets() {
     echo "=== Downloading v86 v${V86_VERSION} browser runtime & extracting assets ==="
-    mkdir -p "$V86_CACHE_DIR"
-    if [ ! -f "$V86_TARBALL" ]; then
-        echo "  -> Fetching $V86_TARBALL_URL"
-        curl -fsSL "$V86_TARBALL_URL" -o "$V86_TARBALL"
-    else
-        echo "  -> Using cached $V86_TARBALL"
-    fi
+    fetch_v86_tarball
     # patch_libv86.py verifies each patch applies exactly once, aborting on mismatch
     python3 "$SCRIPT_DIR/patch_libv86.py" "$V86_TARBALL" "$V86_DIR"
 

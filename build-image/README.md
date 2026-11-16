@@ -19,7 +19,7 @@ This directory contains the build pipeline for generating the custom 32-bit (`x8
 
 ## v86 Runtime Pinning & Patching
 
-`build.sh` downloads a **pinned** v86 npm release (`V86_VERSION`, default `0.5.473`) and extracts `libv86.js` / `v86.wasm` from it via `patch_libv86.py`. That script applies the tmux-dojo patches to the minified `libv86.js` (32MB-RAM initrd placement, `initial_state` memory reservation, `V86Starter` export, per-byte serial output events) and **fails loudly if any patch no longer matches exactly once** — if upstream v86 changes its minified output, either pin a different `V86_VERSION` or update `PATCHES` in `patch_libv86.py`. BIOS ROMs (`seabios.bin`, `vgabios.bin`) are not in the npm tarball and are downloaded from `github.com/copy/v86` when missing.
+`build.sh` downloads a **pinned** v86 npm release (`V86_VERSION`, default `0.5.473`), verifies the tarball's **sha512 against the npm registry's `dist.integrity`** (cached copies are re-verified on every build), and extracts `libv86.js` / `v86.wasm` from it via `patch_libv86.py`. That script applies the tmux-dojo patches to the minified `libv86.js` (32MB-RAM initrd placement, `initial_state` memory reservation, `V86Starter` export, per-byte serial output events) and **fails loudly if any patch no longer matches exactly once, if a required asset is missing, or if the tarball is ambiguous/corrupt** — if upstream v86 changes its minified output, either pin a different `V86_VERSION` or update `PATCHES` in `patch_libv86.py`. BIOS ROMs (`seabios.bin`, `vgabios.bin`) are not in the npm tarball and are downloaded from `github.com/copy/v86` when missing.
 
 ## Building the Image
 
